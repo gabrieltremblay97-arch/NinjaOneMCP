@@ -11,7 +11,8 @@
     "start:stdio": "MCP_MODE=stdio node dist/index.js",
     "start:http": "MCP_MODE=http node dist/index.js",
     "start:sse": "MCP_MODE=sse node dist/index.js",
-    "test": "node dist/test.js"
+    "test": "node dist/test.js",
+    "auth": "node dist/auth.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.1",

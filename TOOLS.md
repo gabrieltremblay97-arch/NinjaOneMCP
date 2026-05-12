@@ -1,392 +1,285 @@
 # NinjaONE MCP Server - Tools Reference
 
-This document provides detailed information about the available tools in the NinjaONE MCP server.
+This document provides detailed information about all available tools in the NinjaONE MCP server.
 
-## Core Tools Available
+## Confirmation Pattern
 
-### Device Management Tools
+All tools that **mutate state** include a `confirm` boolean parameter (default `false`).
+When `confirm` is false the tool performs a **dry-run**: it returns a human-readable
+description of what would happen and instructs the caller to re-invoke with
+`confirm: true` to execute.
 
-#### `get_devices`
-**Description**: List all devices or filter by criteria  
-**Parameters**:
-- `df` (string, optional): Device filter expression (e.g., "org = 1")
-- `pageSize` (number, optional): Number of results per page
-- `after` (number, optional): Pagination cursor
-
-**Example Usage**:
-```json
-{
-  "df": "org = 1 AND status = 'ONLINE'",
-  "pageSize": 50
-}
+Example dry-run response:
+```
+DRY RUN — no changes made.
+Would reboot device id=123 (SCB-PC18) in NORMAL mode.
+Re-call with confirm=true to execute.
 ```
 
-#### `get_device`
-**Description**: Get detailed information about a specific device  
-**Parameters**:
-- `id` (number, required): Device ID
+Tools marked with **(confirm)** below use this pattern.
 
-**Example Usage**:
-```json
-{ "id": 12345 }
-```
+---
 
-#### `reboot_device`
-**Description**: Reboot a device with normal or forced mode  
-**Parameters**:
-- `id` (number, required): Device ID
-- `mode` (string, required): Reboot mode ("NORMAL" or "FORCED")
+## Phase 1 — Read-only operations
 
-**Example Usage**:
-```json
-{
-  "id": 12345,
-  "mode": "NORMAL"
-}
-```
+### Device Management
 
-### Query Tools
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_devices` | List devices with optional filtering | `df?`, `pageSize?`, `after?` |
+| `get_device` | Get device details by ID | `id` |
+| `get_device_software` | Get installed software for a device | `id` |
+| `get_device_activities` | Get activity history for a device | `id`, `pageSize?` |
+| `get_device_dashboard_url` | Get dashboard URL for a device | `id` |
+| `search_devices_by_name` | Search devices by name (client-side) | `name`, `limit?` |
+| `find_windows11_devices` | Find Windows 11 devices | `limit?` |
 
-#### `query_antivirus_status`
-**Description**: Query antivirus status across devices  
-**Parameters**:
-- `df` (string, optional): Device filter expression
-- `cursor` (string, optional): Pagination cursor
-- `pageSize` (number, optional): Number of results per page
+### Organization Management
 
-**Example Usage**:
-```json
-{
-  "df": "org = 1",
-  "pageSize": 100
-}
-```
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_organizations` | List all organizations | `pageSize?`, `after?` |
+| `get_organization` | Get organization details | `id` |
+| `get_organization_locations` | Get locations for an organization | `id` |
+| `get_organization_policies` | Get policies for an organization | `id` |
+| `create_organization` | Create a new organization | `name`, `description?`, `nodeApprovalMode?`, `tags?` |
+| `update_organization` | Update an organization | `id`, `name?`, `description?`, `tags?` |
+| `generate_organization_installer` | Generate device installer | `installerType`, `organizationId?`, `locationId?` |
 
-#### `query_device_health`
-**Description**: Query device health status and metrics  
-**Parameters**:
-- `df` (string, optional): Device filter expression
-- `cursor` (string, optional): Pagination cursor
-- `pageSize` (number, optional): Number of results per page
+### Locations
 
-**Example Usage**:
-```json
-{
-  "df": "status = 'ONLINE'",
-  "pageSize": 50
-}
-```
-
-## Additional Tools
-
-The server also exposes the following additional tools that cover device control, patch actions, organization details, alert details, users/roles, contacts, and approvals/policies.
-
-### Device Control
-- `set_device_maintenance`: Set maintenance mode ON/OFF for a device. When enabling it, the operator will choose a minutes/hours/days/weeks duration or mark it permanent.
-- `get_device_dashboard_url`: Get device dashboard URL
-- `control_windows_service`: Control a Windows service (START/STOP/RESTART)
-- `configure_windows_service`: Configure a Windows service startup type (e.g., AUTOMATIC/MANUAL/DISABLED)
-
-> ℹ️ **Owner details:** The NinjaONE API currently exposes device owner information only via the `assignedOwnerUid` field
-> returned from `get_device`. Dedicated owner management endpoints are not available.
-
-### Device Patch Actions
-- `scan_device_os_patches`: Scan for OS patches on a device
-- `apply_device_os_patches`: Apply OS patches on a device
-- `scan_device_software_patches`: Scan for software patches on a device
-- `apply_device_software_patches`: Apply software patches on a device
-
-### Organization Details
-- `get_organization`: Get organization details by ID
-- `get_organization_locations`: Get locations for an organization
-- `get_organization_policies`: Get organization policies
-- `generate_organization_installer`: Generate installer for an organization/location
-
-### Alert Details
-- `get_alert`: Get a single alert by UID
-- `reset_alert`: Reset/acknowledge an alert by UID
-- `get_device_alerts`: Get alerts for a specific device
-
-### Users & Roles
-- `get_end_users`: List end users
-- `get_end_user`: Get an end user by ID
-- `get_technicians`: List technicians
-- `get_technician`: Get a technician by ID
-- `add_role_members`: Add users to a role
-- `remove_role_members`: Remove users from a role
-
-### Contacts
-- `get_contacts`: List contacts
-- `get_contact`: Get a contact by ID
-- `create_contact`: Create a contact
-- `update_contact`: Update a contact
-- `delete_contact`: Delete a contact
-
-### Device Approvals & Policies
-- `approve_devices`: Approve or deny multiple devices (by IDs)
-- `get_device_policy_overrides`: Get device policy overrides
-- `reset_device_policy_overrides`: Reset/remove all policy overrides for a device
-- `get_policies`: List policies (optionally templates only)
-
-### Region Utilities
-- `list_regions`: List supported regions and base URLs
-- `set_region`: Set region by key or by explicit base URL
-
-## Examples (JSON payloads)
-
-Below are minimal example payloads you can use when calling tools via an MCP client.
-
-### Device Control
-- `set_device_maintenance`
-```json
-{ "id": 12345, "mode": "ON", "duration": { "value": 90, "unit": "MINUTES" } }
-```
-
-```json
-{ "id": 12345, "mode": "ON", "duration": { "permanent": true } }
-```
-
-```json
-{ "id": 12345, "mode": "OFF" }
-```
-
-- `control_windows_service`
-```json
-{ "id": 12345, "serviceId": "Spooler", "action": "RESTART" }
-```
-
-### Device Patch Actions
-- `apply_device_os_patches`
-```json
-{ "id": 12345, "patches": [ { "kb": "KB5030211" } ] }
-```
-
-### Organization Details
-- `generate_organization_installer`
-```json
-{ "installerType": "WINDOWS", "organizationId": 1, "locationId": 2 }
-```
-
-### Contacts
-- `create_contact`
-```json
-{ "organizationId": 1, "firstName": "Jane", "lastName": "Doe", "email": "jane.doe@example.com" }
-```
-
-### Users & Roles
-- `add_role_members`
-```json
-{ "roleId": 7, "userIds": [101, 102] }
-```
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `create_location` | Create a location | `organizationId`, `name`, `address?`, `description?` |
+| `update_location` | Update a location | `organizationId`, `locationId`, `name?`, `address?`, `description?` |
 
 ### Alerts
-- `get_alert`
-```json
-{ "uid": "ALERT_UID_123" }
-```
 
-- `reset_alert`
-```json
-{ "uid": "ALERT_UID_123" }
-```
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_alerts` | Get system alerts | `since?` |
+| `get_alert` | Get alert by UID | `uid` |
+| `get_device_alerts` | Get alerts for a device | `id`, `lang?` |
 
-- `get_device_alerts`
-```json
-{ "id": 12345, "lang": "en-US" }
-```
+### Users & Roles
 
-### Device Dashboard URL
-- `get_device_dashboard_url`
-```json
-{ "id": 12345 }
-```
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_end_users` | List end users | — |
+| `get_end_user` | Get end user by ID | `id` |
+| `create_end_user` | Create an end user | `firstName`, `lastName`, `email`, `phone?`, `organizationId?`, `fullPortalAccess?`, `sendInvitation?` |
+| `update_end_user` | Update an end user | `id`, `firstName?`, `lastName?`, `email?`, `phone?` |
+| `delete_end_user` | Delete an end user | `id` |
+| `get_technicians` | List technicians | — |
+| `get_technician` | Get technician by ID | `id` |
+| `add_role_members` | Add users to a role | `roleId`, `userIds` |
+| `remove_role_members` | Remove users from a role | `roleId`, `userIds` |
 
-### Policies
-- `get_policies`
-```json
-{ "templateOnly": true }
-```
+### Contacts
 
-### Device Approvals
-- `approve_devices`
-```json
-{ "mode": "APPROVE", "deviceIds": [12345, 67890] }
-```
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_contacts` | List contacts | — |
+| `get_contact` | Get contact by ID | `id` |
+| `create_contact` | Create a contact | `organizationId`, `firstName`, `lastName`, `email`, `phone?`, `jobTitle?` |
+| `update_contact` | Update a contact | `id`, `firstName?`, `lastName?`, `email?`, `phone?`, `jobTitle?` |
+| `delete_contact` | Delete a contact | `id` |
 
-### Windows Service Configuration
-- `configure_windows_service`
-```json
-{ "id": 12345, "serviceId": "Spooler", "startupType": "DISABLED" }
-```
+### Device Control
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `control_windows_service` | Control a Windows service | `id`, `serviceId`, `action` (START/STOP/RESTART) |
+| `configure_windows_service` | Configure service startup type | `id`, `serviceId`, `startupType` |
+
+### Patch Scanning
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `scan_device_os_patches` | Scan for OS patches | `id` |
+| `scan_device_software_patches` | Scan for software patches | `id` |
+
+### System Information Queries
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `query_antivirus_status` | Antivirus status across devices | `df?`, `cursor?`, `pageSize?` |
+| `query_antivirus_threats` | Antivirus threat detections | `df?`, `cursor?`, `pageSize?` |
+| `query_computer_systems` | Computer system information | `df?`, `cursor?`, `pageSize?` |
+| `query_device_health` | Device health status | `df?`, `cursor?`, `pageSize?` |
+| `query_operating_systems` | Operating system info | `df?`, `cursor?`, `pageSize?` |
+| `query_logged_on_users` | Currently logged-on users | `df?`, `cursor?`, `pageSize?` |
+
+### Hardware Queries
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `query_processors` | Processor information | `df?`, `cursor?`, `pageSize?` |
+| `query_disks` | Disk drive information | `df?`, `cursor?`, `pageSize?` |
+| `query_volumes` | Disk volume information | `df?`, `cursor?`, `pageSize?` |
+| `query_network_interfaces` | Network interfaces | `df?`, `cursor?`, `pageSize?` |
+| `query_raid_controllers` | RAID controllers | `df?`, `cursor?`, `pageSize?` |
+| `query_raid_drives` | RAID drives | `df?`, `cursor?`, `pageSize?` |
+
+### Software & Patch Queries
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `query_software` | Installed software | `df?`, `cursor?`, `pageSize?` |
+| `query_os_patches` | OS patches | `df?`, `cursor?`, `pageSize?` |
+| `query_software_patches` | Software patches | `df?`, `cursor?`, `pageSize?` |
+| `query_os_patch_installs` | OS patch install history | `df?`, `cursor?`, `pageSize?` |
+| `query_software_patch_installs` | Software patch install history | `df?`, `cursor?`, `pageSize?` |
+| `query_windows_services` | Windows services | `df?`, `cursor?`, `pageSize?` |
+
+### Custom Fields & Policy Queries
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `query_custom_fields` | Custom field values | `df?`, `cursor?`, `pageSize?` |
+| `query_custom_fields_detailed` | Detailed custom fields | `df?`, `cursor?`, `pageSize?` |
+| `query_scoped_custom_fields` | Scoped custom fields | `df?`, `cursor?`, `pageSize?` |
+| `query_scoped_custom_fields_detailed` | Detailed scoped custom fields | `df?`, `cursor?`, `pageSize?` |
+| `query_policy_overrides` | Policy overrides | `df?`, `cursor?`, `pageSize?` |
+| `query_backup_usage` | Backup usage statistics | `df?`, `cursor?`, `pageSize?` |
 
 ### Region Utilities
-- `list_regions`
-```json
-{}
-```
 
-- `set_region`
-```json
-{ "region": "eu" }
-```
-or
-```json
-{ "baseUrl": "https://eu.ninjarmm.com" }
-```
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `list_regions` | List supported regions and base URLs | — |
+| `set_region` | Set region or base URL | `region?`, `baseUrl?` |
 
-### Organization Management Tools
+---
 
-#### `get_organizations`
-**Description**: List all organizations with pagination  
-**Parameters**:
-- `pageSize` (number, optional): Number of results per page
-- `after` (number, optional): Pagination cursor
+## Phase 2 — Write operations with confirmation guardrails
 
-**Example Usage**:
-```json
-{
-  "pageSize": 25,
-  "after": 0
-}
-```
+### Alert Management
 
-### Alert Management Tools
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `reset_alert` | **(confirm)** | Reset/acknowledge an alert | `uid`, `confirm?` |
 
-#### `get_alerts`
-**Description**: Get system alerts with optional filtering  
-**Parameters**:
-- `deviceFilter` (string, optional): Device filter expression
-- `since` (string, optional): ISO timestamp for alerts since this time
+### Device Management
 
-**Example Usage**:
-```json
-{
-  "deviceFilter": "org = 1",
-  "since": "2024-01-01T00:00:00Z"
-}
-```
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `reboot_device` | **(confirm)** | Reboot a device | `id`, `mode?` (NORMAL/FORCED), `confirm?` |
+| `set_device_maintenance` | **(confirm)** | Set maintenance mode | `id`, `mode` (ON/OFF), `duration?`, `confirm?` |
+| `update_device` | **(confirm)** | Update display name or user data | `id`, `displayName?`, `userData?`, `confirm?` |
+
+### Patch Application
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `apply_device_os_patches` | **(confirm)** | Apply OS patches | `id`, `patches`, `confirm?` |
+| `apply_device_software_patches` | **(confirm)** | Apply software patches | `id`, `patches`, `confirm?` |
+
+### Ticketing (full CRUD)
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `get_ticket_boards` | — | List all ticket boards | — |
+| `get_tickets` | — | List tickets from a board | `boardId`, `pageSize?`, `after?` |
+| `get_ticket` | — | Get ticket detail | `ticketId` |
+| `get_ticket_log` | — | Get ticket activity log | `ticketId` |
+| `create_ticket` | **(confirm)** | Create a new ticket | `boardId`, `subject`, `description?`, `status?`, `priority?`, `severity?`, `deviceId?`, `assignedAppUserId?`, `confirm?` |
+| `update_ticket` | **(confirm)** | Update a ticket | `ticketId`, `subject?`, `description?`, `status?`, `priority?`, `severity?`, `assignedAppUserId?`, `confirm?` |
+| `add_ticket_comment` | **(confirm)** | Add comment to a ticket | `ticketId`, `comment`, `appUserId?`, `confirm?` |
+
+### Custom Field Writes
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `update_device_custom_fields` | **(confirm)** | Write custom fields on a device | `deviceId`, `fields`, `confirm?` |
+| `update_org_custom_fields` | **(confirm)** | Write custom fields on an org | `orgId`, `fields`, `confirm?` |
+
+---
+
+## Phase 3 — Webhooks & event-driven integration
+
+### Webhook Configuration
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `get_webhook_config` | — | Show current webhook config | — |
+| `set_webhook_config` | **(confirm)** | Configure a webhook endpoint | `webhookUrl`, `secret?`, `activities?`, `confirm?` |
+| `delete_webhook_config` | **(confirm)** | Remove webhook config | `confirm?` |
+
+> Note: GET /v2/webhook is not supported by the NinjaOne API via client credentials. `get_webhook_config` returns an informational message.
+
+### Polling Queries
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_stale_devices` | Devices not checked in for N hours | `sinceHours?` (default 48) |
+| `get_devices_pending_patches` | Devices with pending/failed patches | `status?` (PENDING/FAILED) |
+
+### Activity Log
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_activities` | System-wide activity log | `pageSize?`, `after?`, `type?`, `deviceId?`, `userId?`, `status?` |
+
+---
+
+## Phase 4 — Script execution & policy management
+
+### Script/Automation Execution
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `list_automations` | — | List saved automation scripts | — |
+| `run_device_script` | **(confirm)** | Run a script on a device | `deviceId`, `scriptId`, `runAs?`, `parameters?`, `timeout?`, `confirm?` |
+| `get_script_result` | — | Poll script run result | `deviceId`, `activityId` |
+
+> Note: Script execution requires authorization code flow in NinjaOne. `list_automations` may return an informational note if not available via client credentials.
+
+### Policy Management
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `get_policies` | — | List all policies | `templateOnly?` |
+| `get_policy` | — | Get policy detail | `policyId` |
+| `assign_device_policy` | **(confirm)** | Assign policy to a device | `deviceId`, `policyId`, `confirm?` |
+| `get_device_policy_overrides` | — | Get policy overrides for a device | `id` |
+| `reset_device_policy_overrides` | **(confirm)** | Reset all policy overrides | `id`, `confirm?` |
+
+### Device Approval
+
+| Tool | Confirm | Description | Parameters |
+|------|---------|-------------|------------|
+| `get_pending_devices` | — | List devices awaiting approval | — |
+| `approve_devices` | **(confirm)** | Approve or reject devices | `mode` (APPROVE/REJECT), `deviceIds`, `confirm?` |
+
+---
 
 ## Device Filter Syntax
 
-The NinjaONE API uses a specific filter syntax for the `df` parameter:
-
-### Basic Operators
-- `=` : Equals
-- `!=` : Not equals
-- `>` : Greater than
-- `<` : Less than
-- `>=` : Greater than or equal
-- `<=` : Less than or equal
-- `LIKE` : Pattern matching (use % for wildcards)
-- `IN` : Value in list
-
-### Logical Operators
-- `AND` : Logical AND
-- `OR` : Logical OR
-- `NOT` : Logical NOT
-
-### Common Filter Examples
+Use NinjaONE's filter syntax for the `df` parameter:
 
 ```
 org = 1                           # Devices in organization 1
 status = 'ONLINE'                 # Online devices only
 name LIKE '%server%'              # Devices with 'server' in name
-org = 1 AND status = 'ONLINE'     # Online devices in org 1
-lastSeen > '2024-01-01'          # Devices seen after Jan 1, 2024
+org = 1 AND status = 'ONLINE'     # Combined filter
+lastSeen > '2024-01-01'          # Devices seen after date
 os.name = 'Windows 10'           # Windows 10 devices
 ```
 
-### Available Fields for Filtering
-
-- `id` : Device ID
-- `name` : Device name
-- `status` : Device status (ONLINE, OFFLINE, etc.)
-- `org` : Organization ID
-- `lastSeen` : Last seen timestamp
-- `os.name` : Operating system name
-- `os.version` : Operating system version
-- `type` : Device type
-- `location` : Location ID
-
 ## Response Format
 
-All tools return responses in the following format:
-
+All tools return MCP-standard responses:
 ```json
 {
-  "content": [
-    {
-      "type": "text",
-      "text": "JSON formatted response data"
-    }
-  ]
+  "content": [{ "type": "text", "text": "JSON formatted response data" }]
 }
 ```
 
-The actual data varies by tool but typically includes:
-- Array of objects for list operations
-- Single object for detail operations
-- Status information for action operations
+## API Limitations
 
-## Error Handling
-
-The server provides comprehensive error handling:
-
-- Invalid Tool: Returns MethodNotFound error
-- API Errors: Returns InternalError with details
-- Authentication: Returns an error if OAuth client credentials are missing or invalid (NINJA_CLIENT_ID / NINJA_CLIENT_SECRET)
-- Network Issues: Returns connection error details
-
-## Rate Limiting
-
-Be aware of NinjaONE API rate limits:
-- Standard limits apply per access token
-- Large queries may need pagination
-- Use appropriate `pageSize` values to avoid timeouts
-
-## Security Considerations
-
-- Never expose API tokens in client-side code
-- Use environment variables for credentials
-- Implement proper CORS settings for HTTP mode
-- Monitor API usage and access patterns
-
-## Extended Tools (Available in Full Implementation)
-
-The current implementation includes core tools. A full implementation would include:
-
-### Device Operations
-- `set_device_maintenance`
-- `approve_devices`
-
-### Patch Management
-- `scan_device_os_patches`
-- `apply_device_os_patches`
-- `scan_device_software_patches`
-- `apply_device_software_patches`
-
-### Service Management
-- `control_windows_service`
-- `configure_windows_service`
-
-### Additional Queries
-- `query_computer_systems`
-- `query_operating_systems`
-- `query_processors`
-- `query_disks`
-- `query_volumes`
-- `query_network_interfaces`
-- `query_software`
-- `query_os_patches`
-- `query_software_patches`
-
-And many more covering all aspects of the NinjaONE platform.
-
-## Support and Documentation
-
-For detailed API documentation, refer to:
-- NinjaONE Official API Documentation
-- Device Filter Syntax Guide
-- MCP Protocol Specification
-
-For issues with this MCP server, check the server logs and ensure proper configuration of environment variables.
+- **Ticketing creation** requires authorization code flow (user context), not client credentials
+- **Script execution** requires authorization code flow
+- **Webhook GET** is not available via the API; use `set_webhook_config` / `delete_webhook_config`
+- **Organization/location deletion** is only available via the NinjaOne dashboard
+- **End user phone update** is read-only after creation

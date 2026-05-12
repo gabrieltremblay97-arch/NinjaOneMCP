@@ -1,3 +1,5 @@
+import { UserOAuth } from './oauth-user.js';
+
 type CreateEndUserPayload = {
   firstName: string;
   lastName: string;
@@ -20,6 +22,8 @@ export class NinjaOneAPI {
   private tokenExpiry: number | null = null;
   private isConfigured: boolean;
   private baseUrlExplicit: boolean = false;
+  private userOAuth: UserOAuth | null = null;
+  private userAuthChecked: boolean = false;
 
   private static readonly REGION_MAP: Record<string, string> = {
     us: 'https://app.ninjarmm.com',
@@ -134,12 +138,35 @@ export class NinjaOneAPI {
     return (fromEnv.length > 0 ? fromEnv : NinjaOneAPI.DEFAULT_CANDIDATES);
   }
 
+  private async getBearerToken(): Promise<string> {
+    // Prefer user-context token (authorization_code) when the user has run the auth CLI.
+    // Falls back to client_credentials for unauthenticated reads.
+    if (!this.userAuthChecked) {
+      this.userAuthChecked = true;
+      if (this.isConfigured) {
+        const candidate = new UserOAuth(this.clientId, this.clientSecret);
+        if (await candidate.isAvailable()) {
+          this.userOAuth = candidate;
+        }
+      }
+    }
+    if (this.userOAuth) {
+      try {
+        return await this.userOAuth.getAccessToken();
+      } catch (e: any) {
+        console.error('User-context token refresh failed, falling back to client_credentials:', e.message);
+        this.userOAuth = null;
+      }
+    }
+    return this.getAccessToken();
+  }
+
   private async makeRequest(
-    endpoint: string, 
+    endpoint: string,
     method: string = 'GET',
     body?: any
   ): Promise<any> {
-    const token = await this.getAccessToken();
+    const token = await this.getBearerToken();
     const base = this.baseUrl || NinjaOneAPI.DEFAULT_CANDIDATES[0];
     
     const options: RequestInit = {
@@ -257,19 +284,17 @@ export class NinjaOneAPI {
     // Schedule maintenance to begin five seconds from "now" to avoid
     // immediately-expired windows due to API processing delays.
     const start = Math.floor((Date.now() + 5000) / 1000);
-    const reasonMessage = duration.permanent
-      ? 'Maintenance mode enabled via API (permanent)'
-      : `Maintenance mode enabled via API for ${duration.value} ${duration.unit.toLowerCase()}`;
+
+    // `end` is required by the NinjaOne spec. For "permanent" windows, use a far-future
+    // sentinel (2100-01-01) since the API has no notion of an open-ended window.
+    const PERMANENT_END = 4102444800;
+    const end = duration.permanent ? PERMANENT_END : start + duration.seconds;
 
     const body: Record<string, unknown> = {
       disabledFeatures: ['ALERTS', 'PATCHING', 'AVSCANS', 'TASKS'],
       start,
-      reasonMessage
+      end
     };
-
-    if (duration && !duration.permanent) {
-      body.end = start + duration.seconds;
-    }
 
     return this.makeRequest(`/v2/device/${id}/maintenance`, 'PUT', body);
   }
@@ -344,8 +369,15 @@ export class NinjaOneAPI {
     return this.makeRequest(`/v2/organization/${id}/locations`); 
   }
 
-  async getOrganizationPolicies(id: number): Promise<any> { 
-    return this.makeRequest(`/v2/organization/${id}/policies`); 
+  async getOrganizationPolicies(id: number): Promise<any> {
+    // NinjaOne has no GET /v2/organization/{id}/policies — only PUT exists.
+    // Return all policies; the caller can cross-reference with org devices.
+    const policies = await this.getPolicies();
+    return {
+      note: `NinjaOne does not expose per-organization policy assignments via GET. Returning all policies. Use get_device or get_policy to see which policy a specific device or org uses.`,
+      organizationId: id,
+      policies
+    };
   }
 
   async generateOrganizationInstaller(installerType: string, locationId?: number, organizationId?: number): Promise<any> {
@@ -382,16 +414,9 @@ export class NinjaOneAPI {
     const body: any = {};
     if (name !== undefined) body.name = name;
     if (description !== undefined) body.description = description;
-    // nodeApprovalMode is intentionally ignored because the public API treats it as read-only after creation.
+    if (nodeApprovalMode !== undefined) body.nodeApprovalMode = nodeApprovalMode;
     if (tags !== undefined) body.tags = tags;
-    try {
-      return await this.makeRequest(`/v2/organizations/${id}`, 'PATCH', body);
-    } catch (error: any) {
-      if (typeof error?.message === 'string' && error.message.includes('404')) {
-        return this.makeRequest(`/v2/organization/${id}`, 'PATCH', body);
-      }
-      throw error;
-    }
+    return this.makeRequest(`/v2/organization/${id}`, 'PATCH', body);
   }
 
   // Location CRUD
@@ -469,16 +494,24 @@ export class NinjaOneAPI {
 
   // Alert Management
   
-  async getAlerts(deviceFilter?: string, since?: string): Promise<any> {
-    return this.makeRequest(`/v2/alerts${this.buildQuery({ df: deviceFilter, since })}`);
+  async getAlerts(deviceFilter?: string, sourceType?: string, since?: string): Promise<any> {
+    return this.makeRequest(`/v2/alerts${this.buildQuery({ df: deviceFilter, sourceType, since })}`);
   }
 
-  async getAlert(uid: string): Promise<any> { 
-    return this.makeRequest(`/v2/alert/${uid}`); 
+  async getAlert(uid: string): Promise<any> {
+    // GET /v2/alert/{uid} is not supported (returns 405).
+    // Fetch the full alert list and find the matching UID client-side.
+    const alerts = await this.getAlerts();
+    if (Array.isArray(alerts)) {
+      const match = alerts.find((a: any) => a.uid === uid);
+      if (match) return match;
+    }
+    return { uid, note: 'Alert not found in active alerts list (may already be resolved).' };
   }
 
-  async resetAlert(uid: string): Promise<any> { 
-    return this.makeRequest(`/v2/alert/${uid}`, 'DELETE'); 
+  async resetAlert(uid: string): Promise<any> {
+    // DELETE /v2/alert/{uid} is the simpler "reset alert/condition" path — no body required.
+    return this.makeRequest(`/v2/alert/${uid}`, 'DELETE');
   }
 
   async getDeviceAlerts(id: number, lang?: string): Promise<any> {
@@ -535,6 +568,50 @@ export class NinjaOneAPI {
 
   async removeRoleMembers(roleId: number, userIds: number[]): Promise<any> {
     return this.makeRequest(`/v2/user/role/${roleId}/remove-members`, 'PATCH', userIds);
+  }
+
+  // Auto-paginating query helper.
+  // Fetches all pages from a /v2/queries/* endpoint, optionally filtering results
+  // client-side by a text match on one or more fields.
+  async queryAllFiltered(
+    queryPath: string,
+    opts?: {
+      df?: string;
+      filter?: { text: string; fields: string[] };
+      maxResults?: number;
+    }
+  ): Promise<any[]> {
+    const maxResults = opts?.maxResults || 50;
+    const filterText = opts?.filter?.text?.toLowerCase();
+    const filterFields = opts?.filter?.fields || [];
+    const collected: any[] = [];
+    let cursor: string | undefined;
+    const pageSize = 500;
+
+    while (true) {
+      const query = this.buildQuery({ df: opts?.df, cursor, pageSize });
+      const resp = await this.makeRequest(`${queryPath}${query}`);
+      const results: any[] = resp.results || [];
+
+      if (filterText && filterFields.length > 0) {
+        for (const item of results) {
+          const match = filterFields.some(f => {
+            const val = item[f];
+            return typeof val === 'string' && val.toLowerCase().includes(filterText);
+          });
+          if (match) collected.push(item);
+          if (collected.length >= maxResults) break;
+        }
+      } else {
+        collected.push(...results);
+      }
+
+      if (collected.length >= maxResults) break;
+      if (!resp.cursor?.name || results.length < pageSize) break;
+      cursor = resp.cursor.name;
+    }
+
+    return collected.slice(0, maxResults);
   }
 
   // Queries - System Information
@@ -640,7 +717,15 @@ export class NinjaOneAPI {
   // Queries - Backup
   
   async queryBackupUsage(df?: string, cursor?: string, pageSize?: number): Promise<any> {
-    return this.makeRequest(`/v2/queries/backup/usage${this.buildQuery({ df, cursor, pageSize })}`);
+    try {
+      return await this.makeRequest(`/v2/queries/backup/usage${this.buildQuery({ df, cursor, pageSize })}`);
+    } catch (e: any) {
+      // A server error here typically means the backup module isn't provisioned on the tenant.
+      if (e.message?.includes('500')) {
+        return { backupModuleAvailable: false, usage: [], note: 'Backup usage is unavailable on this NinjaOne tenant. The backup module may not be provisioned, or the API client may lack access to backup data.' };
+      }
+      throw e;
+    }
   }
 
   // Activities and Software
@@ -657,5 +742,289 @@ export class NinjaOneAPI {
    */
   async getDeviceSoftware(id: number): Promise<any> {
     return this.makeRequest(`/v2/device/${id}/software`);
+  }
+
+  // Phase 2 — Write operations
+
+  async updateDevice(id: number, body: { displayName?: string; userData?: Record<string, string> }): Promise<any> {
+    return this.makeRequest(`/v2/device/${id}`, 'PATCH', body);
+  }
+
+  async updateDeviceCustomFields(deviceId: number, fields: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/device/${deviceId}/custom-fields`, 'PATCH', fields);
+  }
+
+  async updateOrganizationCustomFields(orgId: number, fields: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/organization/${orgId}/custom-fields`, 'PATCH', fields);
+  }
+
+  // Ticketing
+
+  async getTicketBoards(): Promise<any> {
+    return this.makeRequest('/v2/ticketing/trigger/boards');
+  }
+
+  async getTicketStatuses(): Promise<any> {
+    return this.makeRequest('/v2/ticketing/statuses');
+  }
+
+  async getTickets(boardId: number, pageSize?: number, lastCursorId?: number): Promise<any> {
+    const body: any = {};
+    if (pageSize !== undefined) body.pageSize = pageSize;
+    if (lastCursorId !== undefined) body.lastCursorId = lastCursorId;
+    return this.makeRequest(`/v2/ticketing/trigger/board/${boardId}/run`, 'POST', body);
+  }
+
+  async getTicket(ticketId: number): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}`);
+  }
+
+  async getTicketLog(ticketId: number): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}/log-entry`);
+  }
+
+  async createTicket(body: {
+    clientId?: number;
+    ticketFormId?: number;
+    nodeId?: number;
+    summary: string;
+    description?: { public?: boolean; body?: string; htmlBody?: string };
+    status?: string;
+    priority?: string;
+    severity?: string;
+    type?: string;
+    assignedAppUserId?: number;
+    tags?: string[];
+  }): Promise<any> {
+    return this.makeRequest('/v2/ticketing/ticket', 'POST', body);
+  }
+
+  async updateTicket(ticketId: number, ticketFields: {
+    version?: number;
+    ticketFormId?: number;
+    clientId?: number;
+    subject?: string;
+    summary?: string;
+    status?: string;
+    priority?: string;
+    severity?: string;
+    type?: string;
+    assignedAppUserId?: number;
+    nodeId?: number;
+    tags?: string[];
+  }, comment?: { public?: boolean; body?: string }): Promise<any> {
+    // NinjaOne's PUT requires the full ticket object with a distinct schema from GET:
+    //   - status is a string on PUT, an object on GET — use the status `name`
+    //   - ccList (GET) → cc (PUT)
+    //   - attributeValues (GET) → attributes (PUT)
+    //   - id/createTime/deleted/source are GET-only
+    const current = await this.getTicket(ticketId);
+    const { summary, subject, status, ...rest } = ticketFields;
+
+    const put: any = {
+      subject: subject ?? summary ?? current.subject,
+      version: current.version,
+      status: status ?? (typeof current.status === 'object' ? current.status?.name : current.status),
+      priority: current.priority,
+      severity: current.severity,
+      type: current.type,
+      clientId: current.clientId,
+      ticketFormId: current.ticketFormId,
+      locationId: current.locationId,
+      nodeId: current.nodeId,
+      assignedAppUserId: current.assignedAppUserId,
+      requesterUid: current.requesterUid,
+      parentTicketId: current.parentTicketId,
+      followupTime: current.followupTime,
+      tags: current.tags,
+      additionalAssignedTechnicianIds: current.additionalAssignedTechnicianIds,
+      cc: current.ccList,
+      attributes: current.attributeValues,
+      ...rest
+    };
+
+    if (comment) put.comment = comment;
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}`, 'PUT', put);
+  }
+
+  async addTicketComment(ticketId: number, comment: string, isPublic: boolean = true): Promise<any> {
+    // POST /v2/ticketing/ticket/{id}/comment expects multipart/form-data with a JSON part named "comment"
+    // (matches the NinjaOne PowerShell module's implementation). Plain JSON returns a content-type error.
+    const token = await this.getBearerToken();
+    const base = this.baseUrl || NinjaOneAPI.DEFAULT_CANDIDATES[0];
+    const boundary = `----NinjaMCPBoundary${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+    const commentJson = JSON.stringify({ public: isPublic, body: comment });
+    const payload =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="comment"\r\n` +
+      `Content-Type: application/json\r\n` +
+      `\r\n` +
+      `${commentJson}\r\n` +
+      `--${boundary}--\r\n`;
+
+    const response = await fetch(`${base}/v2/ticketing/ticket/${ticketId}/comment`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': '*/*',
+        'Content-Type': `multipart/form-data; boundary=${boundary}`
+      },
+      body: payload
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    if (response.status === 204) return { success: true };
+    const text = await response.text();
+    if (!text) return { success: true };
+    try { return JSON.parse(text); } catch { return { success: true }; }
+  }
+
+  // Phase 3 — Webhooks & event-driven
+
+  async getWebhookConfig(): Promise<any> {
+    // NinjaOne API does not support GET for webhook config via client credentials.
+    // Attempt the call; if it fails with 405, return an informative message.
+    try {
+      return await this.makeRequest('/v2/webhook');
+    } catch (e: any) {
+      if (e.message?.includes('405')) {
+        return { note: 'GET /v2/webhook is not supported by the NinjaOne API. Use set_webhook_config to configure or delete_webhook_config to remove.' };
+      }
+      throw e;
+    }
+  }
+
+  async setWebhookConfig(body: {
+    url: string;
+    activities?: Record<string, string[]>;
+    expand?: string[];
+    headers?: Array<{ name: string; value: string }>;
+    organizationIds?: number[];
+  }): Promise<any> {
+    return this.makeRequest('/v2/webhook', 'PUT', body);
+  }
+
+  async deleteWebhookConfig(): Promise<any> {
+    return this.makeRequest('/v2/webhook', 'DELETE');
+  }
+
+  async getStaleDevices(sinceHours: number): Promise<any> {
+    const cutoff = new Date(Date.now() - sinceHours * 60 * 60 * 1000).toISOString();
+    // NinjaOne df doesn't support last_contact, so filter client-side but keep response lean
+    let devices: any;
+    try {
+      devices = await this.getDevices(undefined, 200);
+    } catch (e: any) {
+      if (e.message?.includes('500')) {
+        return { note: 'Unable to list devices for staleness check (HTTP 500 from /v2/devices). Retry, or narrow by organization via get_devices.' };
+      }
+      throw e;
+    }
+    if (!Array.isArray(devices)) return [];
+    return devices
+      .filter((d: any) => {
+        if (!d.lastContact) return true;
+        return new Date(d.lastContact).toISOString() < cutoff;
+      })
+      .map((d: any) => ({
+        id: d.id,
+        systemName: d.systemName,
+        displayName: d.displayName,
+        nodeClass: d.nodeClass,
+        offline: d.offline,
+        lastContact: d.lastContact,
+        organizationId: d.organizationId
+      }));
+  }
+
+  async getDevicesWithPendingPatches(status?: string): Promise<any> {
+    const patchStatus = status || 'PENDING';
+    return this.queryOSPatches(`status = ${patchStatus}`, undefined, 200);
+  }
+
+  async getActivities(params?: {
+    pageSize?: number;
+    after?: number;
+    before?: number;
+    olderThan?: number;
+    newerThan?: number;
+    type?: string;
+    df?: string;
+    user?: number;
+    status?: string;
+    seriesUid?: string;
+  }): Promise<any> {
+    const query = this.buildQuery(params || {});
+    return this.makeRequest(`/v2/activities${query}`);
+  }
+
+  // Phase 4 — Script execution & policy management
+
+  async getAutomations(): Promise<any> {
+    // Try known endpoint paths — the scripting API path varies by NinjaOne version.
+    const paths = [
+      '/v2/device-scripting/scripts',
+      '/v2/automation/scripting',
+      '/v2/scripting/automation'
+    ];
+    for (const path of paths) {
+      try {
+        return await this.makeRequest(path);
+      } catch (e: any) {
+        if (e.message?.includes('404') || e.message?.includes('405')) continue;
+        throw e;
+      }
+    }
+    return { note: 'Automation script listing is not available via client credentials flow. Scripts must be pre-configured in NinjaOne; use run_device_script with a known script ID.' };
+  }
+
+  async runDeviceScript(deviceId: number, body: {
+    type?: string;
+    id: number;
+    uid?: string;
+    runAs?: string;
+    parameters?: string;
+  }): Promise<any> {
+    const payload = { type: body.type || 'SCRIPT', ...body };
+    return this.makeRequest(`/v2/device/${deviceId}/script/run`, 'POST', payload);
+  }
+
+  async getScriptResult(deviceId: number, activityId: number): Promise<any> {
+    // No dedicated script result endpoint. Poll device activities for the result.
+    const activities = await this.getDeviceActivities(deviceId, 50);
+    const results: any[] = activities?.activities || activities || [];
+    const match = Array.isArray(results)
+      ? results.find((a: any) => a.id === activityId || a.activityId === activityId)
+      : null;
+    if (match) return match;
+    return { note: `Activity ${activityId} not found in recent device activities. The script may still be running.`, deviceId, activityId };
+  }
+
+  async getPolicy(policyId: number): Promise<any> {
+    // No single-policy GET endpoint exists. Fetch all and filter.
+    const policies = await this.getPolicies();
+    if (!Array.isArray(policies)) return policies;
+    const policy = policies.find((p: any) => p.id === policyId);
+    if (!policy) throw new Error(`Policy ${policyId} not found`);
+    return policy;
+  }
+
+  async assignDevicePolicy(deviceId: number, policyId: number): Promise<any> {
+    // No dedicated policy assignment endpoint. Use device PATCH with policyId.
+    try {
+      return await this.makeRequest(`/v2/device/${deviceId}`, 'PATCH', { policyId });
+    } catch (e: any) {
+      if (e.message?.includes('404')) {
+        throw new Error(`Device ${deviceId} not found — verify the device ID via get_devices. (PATCH /v2/device/${deviceId} returned 404.)`);
+      }
+      throw e;
+    }
+  }
+
+  async getPendingDevices(): Promise<any> {
+    return this.getDevices('status = PENDING', 200);
   }
 }

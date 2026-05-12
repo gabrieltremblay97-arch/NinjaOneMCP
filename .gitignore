@@ -13,3 +13,9 @@ Thumbs.db
 *.log
 .vscode/
 *.tsbuildinfo
+
+# Bundle backups
+*.mcpb.bak
+
+# Claude Code local workspace settings
+.claude/
