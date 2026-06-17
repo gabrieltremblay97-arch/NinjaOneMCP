@@ -1798,11 +1798,11 @@ async function main() {
   try {
     switch (mode.toLowerCase()) {
       case 'http':
-        const httpPort = parseInt(process.env.HTTP_PORT || '3000', 10);
+        const httpPort = parseInt(process.env.PORT || process.env.HTTP_PORT || '3000', 10);
         await server.runHttp(httpPort);
         break;
       case 'sse':
-        const ssePort = parseInt(process.env.SSE_PORT || '3001', 10);
+        const ssePort = parseInt(process.env.PORT || process.env.SSE_PORT || '3001', 10);
         await server.runSse(ssePort);
         break;
       case 'stdio':
